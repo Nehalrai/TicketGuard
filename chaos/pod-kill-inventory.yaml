@@ -1,0 +1,20 @@
+# Kills a random inventory-service pod every 30s for 3 minutes, timed to run
+# during the sustained-spike stage of load-test/on-sale-spike.js. The HPA and
+# Kubernetes' own rescheduling are what's actually being tested here — the
+# question is whether booking-service's circuit breaker and retry logic keep
+# the SLOs green while pods are dying underneath it.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-inventory-pods
+  namespace: ticketguard
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [ticketguard]
+    labelSelectors:
+      app: inventory-service
+  scheduler:
+    cron: "@every 30s"
+  duration: "3m"

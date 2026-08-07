@@ -1,0 +1,81 @@
+{
+  "title": "TicketGuard — SLO Dashboard",
+  "uid": "ticketguard-slo",
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Booking Success Rate (SLO: >= 99.9%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(booking_requests_total{result=\"success\"}[1m])) / sum(rate(booking_requests_total[1m])) * 100",
+          "legendFormat": "success rate %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "thresholds": { "steps": [
+          { "color": "red", "value": null },
+          { "color": "green", "value": 99.9 }
+        ]}}
+      }
+    },
+    {
+      "id": 2,
+      "title": "p95 Booking Latency (SLO: < 300ms)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(booking_latency_seconds_bucket[1m])) by (le)) * 1000",
+          "legendFormat": "p95 latency (ms)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "thresholds": { "steps": [
+          { "color": "green", "value": null },
+          { "color": "red", "value": 300 }
+        ]}}
+      }
+    },
+    {
+      "id": 3,
+      "title": "Inventory Reserve Outcomes",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "sum(rate(inventory_reserve_requests_total[1m])) by (result)", "legendFormat": "{{result}}" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Pod Restarts (chaos visibility)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"ticketguard\"}) by (pod)", "legendFormat": "{{pod}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Booking Service Pod Count (autoscaling visibility)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "count(kube_pod_info{namespace=\"ticketguard\", pod=~\"booking-service.*\"})", "legendFormat": "booking-service replicas" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Circuit Breaker Trips (booking -> inventory)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "sum(rate(booking_requests_total{result=\"circuit_open\"}[1m]))", "legendFormat": "circuit_open responses/sec" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "time": { "from": "now-30m", "to": "now" }
+}

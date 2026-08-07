@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: ticketguard
+  labels:
+    app: notification-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8000"
+    spec:
+      containers:
+        - name: notification-service
+          image: <ECR_REPO_URL>/ticketguard/notification-service:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: BOOKING_EVENTS_QUEUE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: ticketguard-config
+                  key: booking_events_queue_url
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ticketguard-config
+  namespace: ticketguard
+data:
+  booking_events_queue_url: "<SQS_QUEUE_URL>"

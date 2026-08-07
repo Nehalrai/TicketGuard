@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: booking-service
+  namespace: ticketguard
+  labels:
+    app: booking-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: booking-service
+  template:
+    metadata:
+      labels:
+        app: booking-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8000"
+    spec:
+      containers:
+        - name: booking-service
+          image: <ECR_REPO_URL>/ticketguard/booking-service:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: LOCAL_MODE
+              value: "false"
+            - name: INVENTORY_URL
+              value: "http://inventory-service:8000"
+            - name: IDEMPOTENCY_TABLE
+              value: "ticketguard-idempotency-keys"
+            - name: INVENTORY_TIMEOUT_S
+              value: "1.5"
+            - name: MAX_RETRIES
+              value: "2"
+            - name: BOOKING_EVENTS_QUEUE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: ticketguard-config
+                  key: booking_events_queue_url
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: booking-service
+  namespace: ticketguard
+spec:
+  type: LoadBalancer
+  selector:
+    app: booking-service
+  ports:
+    - port: 80
+      targetPort: 8000
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: booking-service-scaledobject
+  namespace: ticketguard
+spec:
+  scaleTargetRef:
+    name: booking-service
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  cooldownPeriod: 60
+  triggers:
+    # Scale on actual request pressure via CPU as a baseline...
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: "60"
+    # ...and, more importantly, on SQS backlog — this is the trigger that
+    # actually reflects real demand during a spike, not just per-pod CPU.
+    - type: aws-sqs-queue
+      metadata:
+        queueURL: <SQS_QUEUE_URL>
+        queueLength: "20"
+        awsRegion: ap-south-1
+      authenticationRef:
+        name: keda-aws-credentials

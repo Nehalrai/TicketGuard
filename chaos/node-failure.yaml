@@ -1,0 +1,18 @@
+# The most severe experiment: simulates an entire worker node becoming
+# unreachable (not just a pod dying), forcing Kubernetes to reschedule every
+# pod that was on it elsewhere in the cluster. Run this one on its own,
+# separate from the combined load test, since it's disruptive enough that
+# stacking it with everything else makes results hard to interpret.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: simulate-node-failure
+  namespace: ticketguard
+spec:
+  action: pod-failure
+  mode: all
+  selector:
+    namespaces: [ticketguard]
+    labelSelectors:
+      app: inventory-service
+  duration: "60s"

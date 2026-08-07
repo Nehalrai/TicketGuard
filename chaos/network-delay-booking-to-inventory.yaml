@@ -1,0 +1,28 @@
+# Injects 800ms +/- 200ms latency on booking-service's calls to inventory-service.
+# This is a different failure mode than pod-kill: the dependency is *slow*, not
+# *down*, which is what actually trips up naive retry logic (retry storms making
+# things worse). Proves the 1.5s client timeout + capped retries in
+# booking-service/main.py prevents that.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: delay-booking-to-inventory
+  namespace: ticketguard
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces: [ticketguard]
+    labelSelectors:
+      app: booking-service
+  delay:
+    latency: "800ms"
+    jitter: "200ms"
+    correlation: "25"
+  target:
+    mode: all
+    selector:
+      namespaces: [ticketguard]
+      labelSelectors:
+        app: inventory-service
+  duration: "2m"

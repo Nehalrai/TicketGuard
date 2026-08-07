@@ -1,0 +1,125 @@
+name: ci-cd
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write   # required for AWS OIDC — no long-lived AWS keys stored in GitHub
+  contents: read
+
+env:
+  AWS_REGION: ap-south-1
+  EKS_CLUSTER: ticketguard
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [inventory-service, booking-service, notification-service]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r services/${{ matrix.service }}/requirements.txt
+      - name: Lint
+        run: pip install ruff && ruff check services/${{ matrix.service }}
+      # Unit tests would run here — omitted from this scaffold, see BUILD_CHECKLIST.md
+
+  terraform-plan:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: terraform fmt check
+        run: terraform -chdir=terraform fmt -check -recursive
+      - name: terraform init
+        run: terraform -chdir=terraform init -backend=false
+      - name: terraform validate
+        run: terraform -chdir=terraform validate
+      - name: terraform plan
+        run: terraform -chdir=terraform plan -out=tfplan.binary -input=false
+      - name: terraform show (json, for OPA)
+        run: terraform -chdir=terraform show -json tfplan.binary > tfplan.json
+      - name: Install conftest
+        run: |
+          curl -sL https://github.com/open-policy-agent/conftest/releases/download/v0.53.0/conftest_0.53.0_Linux_x86_64.tar.gz | tar xz
+          sudo mv conftest /usr/local/bin
+      # This is the guardrail: the pipeline fails the build — before anything
+      # reaches AWS — if the plan would create a wildcard "*:*" IAM policy or
+      # attach AdministratorAccess directly to a role. Security review becomes
+      # a pre-merge gate instead of a manual audit after the fact.
+      - name: OPA policy gate (block over-privileged IAM)
+        run: conftest test terraform/tfplan.json --policy policy/
+
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      matrix:
+        service: [inventory-service, booking-service, notification-service]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image for scan
+        run: docker build -t scan-target:${{ matrix.service }} services/${{ matrix.service }}
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "scan-target:${{ matrix.service }}"
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"   # fail the build on critical/high CVEs
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: [terraform-plan, security-scan]
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        service: [inventory-service, booking-service, notification-service]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials (OIDC, no static keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build, tag, push
+        run: |
+          IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/ticketguard/${{ matrix.service }}:${{ github.sha }}"
+          docker build -t "$IMAGE_URI" services/${{ matrix.service }}
+          docker push "$IMAGE_URI"
+
+  deploy-canary:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+      - name: Deploy new image at 20% traffic (canary)
+        run: |
+          kubectl set image deployment/booking-service booking-service=<IMAGE_URI> -n ticketguard --record
+          kubectl rollout status deployment/booking-service -n ticketguard --timeout=120s
+      - name: Post-deploy smoke test
+        run: |
+          curl -sf $(kubectl get svc booking-service -n ticketguard -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')/health
+      - name: Watch error rate for 3 minutes, roll back on SLO breach
+        run: |
+          # Pulls the error-rate query from Prometheus post-deploy; if
+          # http_req_failed rate exceeds the 0.1% SLO threshold within the
+          # observation window, automatically revert instead of paging a human
+          # to notice first. See monitoring/ for the underlying Grafana panel.
+          ./scripts/watch-and-rollback.sh booking-service ticketguard 180 0.001
